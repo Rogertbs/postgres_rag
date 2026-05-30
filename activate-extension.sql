@@ -3,7 +3,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 -- 2. Cria a extensão para funções de IA (caso você esteja usando o pgai)
 -- Se você ainda não estiver usando o pgai, pode remover a linha abaixo.
--- CREATE EXTENSION IF NOT EXISTS ai CASCADE;
+CREATE EXTENSION IF NOT EXISTS ai CASCADE;
 
 -- 3. Mensagem de confirmação no log do banco ao iniciar
 DO $$ 

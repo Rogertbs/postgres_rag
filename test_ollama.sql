@@ -1,24 +1,29 @@
-select set_config('ai.ollama_host', 'http://host.docker.internal:11434', false);
+-- 1. Configurar o host do Ollama (ajuste a URL conforme necessário)
+select set_config('ai.ollama_host', 'http://172.16.200.20:11434', false);
 
+-- 2. Listar modelos disponíveis (use o schema "ai.")
 SELECT *
-FROM ollama_list_models()
+FROM ai.ollama_list_models()
 ORDER BY size DESC;
 
-select ollama_generate
+-- 3. Gerar texto com um modelo
+select ai.ollama_generate
 (
-    'llama3',
+    'Qwen2.5:1.5b',
     'O que são LLMs. Responda brevemente'
 )->'response';
 
-select ollama_embed
+-- 4. Gerar embedding
+select ai.ollama_embed
 (
-    'llama3',
+    'nomic-embed-text',
     'O que são LLMs. Responda brevemente'
 );
 
-select ollama_chat_complete
+-- 5. Chat completo com mensagens
+select ai.ollama_chat_complete
 (
-    'llama3',
+    'Qwen2.5:1.5b',
     jsonb_build_array(
         jsonb_build_object('role', 'system', 'content', 'Você é um assistente. Responda sempre em português.'),
         jsonb_build_object('role', 'user', 'content', 'Responda de forma breve o que é um LLM')
