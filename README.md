@@ -1,4 +1,38 @@
-# RAG PG — Chatbot Privado com PostgreSQL + pgvector + pgai
+# RAG PG — Chatbot Privado + Agentes LangGraph
+
+Repositório com **dois experimentos** que compartilham o mesmo stack (PostgreSQL + pgvector + Ollama):
+
+1. **RAG interativo** (`rag_teste.py`) — busca vetorial + geração de resposta via LLM.
+2. **Agent Reporter** (`app/agent_reporter/`) — pipeline de notícias fictícias com **LangGraph**, exercitando as 4 premissas: Streaming, Human-in-the-loop, Multi-Agente (Supervisor) e Cyclic Graphs.
+
+> Guia de estudo LangGraph em `app/docs/instructs.md` — do zero ao avançado, com Ollama.
+
+---
+
+## Visão geral
+
+```
+rag_pg/
+├── rag_teste.py              # [1] RAG interativo (PostgreSQL + pgvector)
+├── app/                      # [2] Aplicação LangGraph
+│   ├── main.py               #   Runner do agent_reporter (terminal)
+│   ├── docs/instructs.md     #   Guia de estudo LangGraph
+│   └── agent_reporter/       #   Agente "Reporter" de notícias
+│       ├── agent.py          #     Montagem + compile do grafo
+│       └── utils/
+│           ├── state.py      #     State (TypedDict + reducers)
+│           ├── nodes.py      #     Nós (buscador, resumidor, revisor, entregador)
+│           ├── llm.py        #     Instância do LLM (Ollama)
+│           └── tools.py      #     Tools (data_atual, etc)
+├── seed_data.sql             # Dados de teste do RAG
+├── Dockerfile                # PostgreSQL 18 + pgvector
+├── docker-compose.yaml       # Orquestração do container
+└── ...
+```
+
+---
+
+# Parte 1 — RAG Interativo (rag_teste.py)
 
 Serviço de banco de dados vetorial para chatbot privado, utilizando PostgreSQL 18 com as extensões **pgvector** (armazenamento e busca de embeddings) e **pgai** (integração com Ollama para geração de embeddings e LLM).
 
@@ -64,7 +98,11 @@ Serviço de banco de dados vetorial para chatbot privado, utilizando PostgreSQL 
 
 ```
 rag_pg/
-├── rag_teste.py            # Script principal — RAG interativo via terminal
+├── rag_teste.py            # [RAG] Script principal — RAG interativo via terminal
+├── app/                    # [LangGraph] Aplicação de agentes
+│   ├── main.py             #   Runner do agent_reporter
+│   ├── docs/instructs.md   #   Guia de estudo LangGraph
+│   └── agent_reporter/     #   Agente Reporter (notícias)
 ├── seed_data.sql           # Popula o banco com dados de teste (Himalaia indiano)
 ├── Dockerfile              # Imagem PostgreSQL 18 + pgvector + pgai
 ├── docker-compose.yaml     # Orquestração do container
@@ -168,3 +206,89 @@ docker compose down -v
 # Recriar do zero
 docker compose up -d --build --force-recreate
 ```
+
+---
+
+# Parte 2 — Agent Reporter (LangGraph)
+
+Pipeline de **notícias fictícias** geradas por IA, orquestrado com **LangGraph** sobre o **Ollama** (`qwen2.5:1.5b`). Exercita as **4 premissas** do framework.
+
+## Arquitetura — Fluxo do grafo
+
+```
+                    ┌─────────────────────────┐
+   usuário ───────▶ │  buscador_noticia_bruta │  LLM gera notícia fictícia
+                    └────────────┬────────────┘
+                                 ▼
+                    ┌─────────────────────────┐
+               ┌──▶ │  resumidor_noticia      │  gera título + resumo (JSON)
+               │    └────────────┬────────────┘
+               │                 ▼
+               │    ┌─────────────────────────┐
+               │    │  revisor_noticia        │  feedback: positivo/negativo
+               │    └────────────┬────────────┘
+               │                 │
+               │   feedback=="negativo" ──┘  (CICLO / Revisão-Correção)
+               │                 │ feedback=="positivo"
+               │                 ▼
+               │    ┌─────────────────────────┐
+               │    │  human_review (HITL)    │  pausa p/ aprovação humana
+               │    └────────────┬────────────┘
+               │                 │ aprovado
+               └─────────────────┘ não: volta pro resumidor
+                                 ▼
+                    ┌─────────────────────────┐
+                    │  entregador_noticia     │  retorna ao usuário (output)
+                    └─────────────────────────┘
+```
+
+## As 4 premissas cobertas
+
+| Premissa | Onde aparece |
+|---|---|
+| **Cyclic Graphs** | `add_conditional_edges("revisor_noticia", rota_revisao)` volta ao resumidor |
+| **Human-in-the-loop** | `interrupt_before=["human_review"]` + `MemorySaver` + `Command(update=...)` |
+| **Streaming** | `agent.stream(...)` no runner (`app/main.py`) |
+| **Multi-Agente (Supervisor)** | (opcional) nó supervisor roteando entre agentes |
+
+## Como rodar
+
+```bash
+cd /ez/services/rag_pg/app
+python3 main.py
+```
+
+O fluxo interativo:
+1. O grafo gera uma notícia fictícia sobre o tema.
+2. O resumidor cria título + resumo (em JSON).
+3. O revisor avalia (positivo/negativo). Se negativo, **volta pro resumidor** (ciclo).
+4. O grafo **pausa** para aprovação humana: `Aprovar? [s/n]`
+   - `s` → entregador publica a notícia final.
+   - `n` → volta pro resumidor para reescrever.
+5. Limite anti-loop: 3 tentativas (depois disso, segue pra aprovação mesmo assim).
+
+## Estrutura do agent_reporter
+
+| Arquivo | Responsabilidade |
+|---|---|
+| `agent.py` | Monta o `StateGraph`, registra nós, liga edges, `compile()` → variável `agent` |
+| `utils/state.py` | `ReporterState` (TypedDict) — campos que circulam no grafo |
+| `utils/nodes.py` | Funções dos nós: `buscador_noticia_bruta`, `resumidor_noticia`, `revisor_noticia`, `entregador_noticia` |
+| `utils/llm.py` | Instância do `ChatOllama` (via `init_chat_model`) |
+| `utils/tools.py` | Tools (`@tool`) — ex.: `data_atual` (uso opcional, pra aprender ReAct) |
+
+## Guia de estudo
+
+O documento `app/docs/instructs.md` contém o passo a passo pedagógico de LangGraph do zero ao avançado, com as 4 premissas explicadas isoladamente e a aplicação completa desenhada passo a passo.
+
+## Observabilidade (opcional)
+
+Para visualizar traces do grafo, configure o **LangSmith** via env vars antes de rodar:
+
+```bash
+export LANGSMITH_TRACING=true
+export LANGSMITH_API_KEY=<sua-key>
+export LANGSMITH_PROJECT=App-Langgraph-Learning
+```
+
+> Veja `app/.env-sample` para o template. **Nunca commite a key real** (use `.env-langsmith` ignorado pelo `.gitignore`).
