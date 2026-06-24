@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtualenv
+.venv/
+venv/
+env/
+
+# Env / secrets
+.env
+.env.*
+.env-langsmith
+*.pem
+*.key
+
+# LangGraph / LangChain
+*.sqlite
+*.sqlite-journal
+langgraph.db/
+langgraph.checkpoints/
+
+# Logs / DB local
+*.log
+postgres_data/
+
+# Imagens geradas pelo LangGraph
+grafo.png
+*.mermaid.png
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
