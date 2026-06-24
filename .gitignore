@@ -17,6 +17,7 @@ env/
 # Env / secrets
 .env
 .env.*
+.env-langsmith
 *.pem
 *.key
 
