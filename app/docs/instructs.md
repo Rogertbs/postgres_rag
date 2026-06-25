@@ -534,3 +534,212 @@ foco dar ao tema. Cada agente volta para o supervisor.
 Concluindo os **11 passos do §6** você terá um app funcional cobrindo as 4
 premissas, rodando 100% local com Ollama, e visualizável em Mermaid/PNG e no
 LangGraph Studio. **Escrevendo você mesmo, a lógica fixa.**
+
+---
+
+# Referência Rápida — Tools, Nodes e Edges
+
+> Guia de bolso para decidir **quando usar o quê**. Consulte quando travar.
+
+---
+
+## R.1 Tools — quando usar
+
+**Regra de ouro:** use uma tool quando o LLM **não consegue fazer sozinho** e
+precisa **decidir** se chama.
+
+| Precisa de tool? | Exemplo |
+|---|---|
+| **Sim** — LLM não tem acesso | buscar web, data/hora atual, query em DB, chamar API externa, calculator precisa |
+| **Não** — LLM faz sozinho | gerar texto, resumir, traduzir, classificar, escrever código |
+
+### Casos de uso reais
+
+```python
+@tool
+def buscar_web(query: str) -> str:
+    """Busca na internet quando precisa de informação atual."""
+    # DuckDuckGo / Tavily / SerpAPI
+
+@tool
+def query_db(sql: str) -> str:
+    """Consulta o banco quando precisa de dados internos."""
+    # psycopg / SQLAlchemy
+
+@tool
+def enviar_email(destino: str, corpo: str) -> str:
+    """Envia email — ação crítica, normalmente com HITL antes."""
+    # SMTP / SendGrid
+```
+
+### Quando **NÃO** usar tool
+
+```python
+# ❌ ERRADO — isso é um nó, não uma tool
+@tool
+def resumir(texto: str) -> str:
+    return llm.invoke(f"Resuma: {texto}")
+
+# ✅ CERTO — o LLM já sabe resumir, é só chamar direto num nó
+def no_resumidor(state):
+    resp = llm.invoke([SystemMessage(...), HumanMessage(content=state["texto"])])
+    return {"resumo": resp.content}
+```
+
+### Padrão de uso: ReAct (agente que decide)
+
+```
+pergunta → LLM.decide() → precisa de info? → chama tool → observa → LLM.decide() → responde
+```
+
+Sempre que tiver tool, precisa de:
+- `bind_tools([...])` no LLM
+- `ToolNode(tools)` como nó executor
+- Condicional que olha `tool_calls` → vai pro nó tools ou pro END
+
+---
+
+## R.2 Nodes — quando e como
+
+**Node = uma etapa que transforma o state.** Cada nó faz **uma coisa** e devolve
+**só o que mudou**.
+
+### Quando criar um nó
+
+| Situação | Cria nó? |
+|---|---|
+| Chamar LLM pra gerar/classificar/resumir | **Sim** |
+| Executar lógica sem LLM (formatar, contar, validar) | **Sim** |
+| Pausar pra aprovação humana (HITL) | **Sim** (nó vazio que só marca pausa) |
+| Uma decisão de roteamento | **Não** — isso é condicional (edge), não nó |
+
+### 3 tipos de nó
+
+```python
+# TIPO 1 — Nó com LLM (o mais comum)
+def no_buscador(state):
+    resp = llm.invoke([SystemMessage(...), HumanMessage(content=state["assunto"])])
+    return {"noticia_bruta": resp.content}
+
+# TIPO 2 — Nó sem LLM (lógica pura)
+def no_entregador(state):
+    return {"messages": [AIMessage(content=f"### {state['titulo']}\n\n{state['resumo']}")]}
+
+# TIPO 3 — Nó de pausa HITL (não faz nada, só existe pra ser interrompido)
+def human_review(state):
+    return {}
+```
+
+### Casos de uso por tipo
+
+| Tipo | Caso de uso |
+|---|---|
+| **Com LLM** | buscador, resumidor, revisor, tradutor, classificador, gerador |
+| **Sem LLM** | formatar output, contador, validador de schema, router por regra fixa |
+| **HITL** | aprovação antes de publicar/enviar/cobrar |
+
+### Regra mental
+
+> Um nó **não decide** o caminho. Ele só transforma state. Quem decide o próximo
+> passo é o **edge**.
+
+---
+
+## R.3 Edges — fixa vs condicional
+
+### Edge fixa (`add_edge`) — caminho sempre igual
+
+```python
+builder.add_edge("buscador", "resumidor")   # depois de buscar, sempre resume
+```
+
+**Quando:** o próximo passo **nunca muda**, independente do state.
+
+### Edge condicional (`add_conditional_edges`) — caminho depende do state
+
+```python
+def rota_revisao(state):
+    if state["feedback"] == "negativo":
+        return "resumidor"     # volta (CICLO)
+    return "human_review"      # segue
+
+builder.add_conditional_edges("revisor", rota_revisao)
+```
+
+**Quando:** o próximo passo **depende** de algo no state (feedback, decisão do
+LLM, contador, aprovação).
+
+### Comparação direta
+
+| | Edge fixa | Edge condicional |
+|---|---|---|
+| **API** | `add_edge(A, B)` | `add_conditional_edges(A, função)` |
+| **Decisão** | sempre vai pra B | função olha state e escolhe |
+| **Ciclo possível?** | não (só A→B) | **sim** (pode voltar A→A) |
+| **Caso típico** | pipeline linear | roteamento, loops, branches |
+
+### Casos de uso de cada
+
+```python
+# EDGE FIXA — pipeline linear
+builder.add_edge(START, "buscador")
+builder.add_edge("buscador", "resumidor")      # sempre
+builder.add_edge("entregador", END)             # sempre termina
+
+# EDGE CONDICIONAL — ciclo de revisão
+builder.add_conditional_edges("revisor", rota_revisao)  # depende do feedback
+
+# EDGE CONDICIONAL — HITL (aprovou/reprovou)
+builder.add_conditional_edges("human_review", rota_aprovacao)  # depende de approved
+
+# EDGE CONDICIONAL — ReAct (tem tool_calls ou não)
+builder.add_conditional_edges("agente", ToolsCondition)  # "tools" ou END
+
+# EDGE CONDICIONAL — roteamento por tipo
+def rota_suporte(state):
+    if "fatura" in state["mensagem"]:
+        return "agente_financeiro"
+    if "tecnico" in state["mensagem"]:
+        return "agente_tecnico"
+    return "agente_geral"
+builder.add_conditional_edges("classificador", rota_suporte)
+```
+
+### Quando o ciclo (loop) entra
+
+O ciclo **só existe** em edge condicional — quando a função retorna o nome de um
+nó **anterior**:
+
+```python
+def rota_revisao(state):
+    return "resumidor" if state["feedback"] == "negativo" else "entregar"
+    #         ^^^^^^^^^^^^ nó ANTERIOR = ciclo (volta)
+```
+
+Sempre proteja com contador anti-loop:
+```python
+if state.get("tentativas", 0) >= 3:
+    return "entregar"   # desiste do ciclo
+```
+
+---
+
+## R.4 Árvore de decisão — quando usar o quê
+
+```
+Precisa de algo que o LLM não faz sozinho?
+├── SIM → @tool + ToolNode + condicional (ReAct)
+└── NÃO → nó que chama llm.invoke() direto
+
+O próximo passo é sempre o mesmo?
+├── SIM → add_edge (fixa)
+└── NÃO → add_conditional_edges (condicional)
+
+O condicional retorna um nó anterior?
+├── SIM → é um CICLO (proteja com contador)
+└── NÃO → é um branch normal
+
+É uma decisão de roteamento (qual agente/caminho)?
+├── SIM → é condicional (edge), NÃO é nó
+└── NÃO → se for transformação, é nó
+```
